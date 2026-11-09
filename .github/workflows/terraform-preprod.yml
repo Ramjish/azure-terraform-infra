@@ -1,3 +1,4 @@
+
 name: Terraform Preprod Pipeline
 
 on:
@@ -14,73 +15,55 @@ on:
 permissions:
   contents: read
 
-# ============================================================
-# COMMON CONFIGURATION
-# ============================================================
-
 env:
-  TF_VERSION: '1.10.5'
-  TF_DIR: environments/preprod
-  TF_IN_AUTOMATION: true
+  TF_VERSION: "1.10.5"
+  TF_DIR: "environments/preprod"
+  TF_IN_AUTOMATION: "true"
+
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
 jobs:
 
-  # ==========================================================
-  # STAGE 1: TERRAFORM INIT
-  # ==========================================================
-
   terraform-init:
-    name: '1. Terraform Init'
+    name: Terraform Init
     runs-on: [self-hosted, linux, x64]
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Terraform
+      - name: Install Azure CLI
+        shell: bash
         run: |
-          set -euo pipefail
-
-          mkdir -p "$RUNNER_TEMP/terraform-bin"
-
-          if ! command -v unzip >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y unzip
+          if ! command -v az >/dev/null 2>&1; then
+            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
           fi
+          az version
 
-          curl -fsSL \
-            "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" \
-            -o "$RUNNER_TEMP/terraform.zip"
-
-          unzip -o "$RUNNER_TEMP/terraform.zip" \
-            -d "$RUNNER_TEMP/terraform-bin"
-
-          echo "$RUNNER_TEMP/terraform-bin" >> "$GITHUB_PATH"
-
-          "$RUNNER_TEMP/terraform-bin/terraform" version
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Azure Login
         uses: azure/login@v2
         with:
-          auth-type: SERVICE_PRINCIPAL
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: >-
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
 
-      - name: Verify Azure Subscription
-        run: |
-          az account show \
-            --query "{Name:name, Subscription:id}" \
-            --output table
+      - name: Verify Azure Login
+        run: az account show --output table
 
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
+        shell: bash
         run: |
-          set -euo pipefail
-
           terraform init \
             -input=false \
             -backend-config="resource_group_name=23-10-2026ramji" \
@@ -92,14 +75,8 @@ jobs:
             -backend-config="use_cli=true" \
             -backend-config="use_azuread_auth=true"
 
-          echo "Terraform Init completed successfully."
-
-  # ==========================================================
-  # STAGE 2: TERRAFORM VALIDATE
-  # ==========================================================
-
   terraform-validate:
-    name: '2. Terraform Validate'
+    name: Terraform Validate
     runs-on: [self-hosted, linux, x64]
     needs: terraform-init
 
@@ -107,40 +84,25 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Terraform
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$RUNNER_TEMP/terraform-bin"
-
-          if ! command -v unzip >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y unzip
-          fi
-
-          curl -fsSL \
-            "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" \
-            -o "$RUNNER_TEMP/terraform.zip"
-
-          unzip -o "$RUNNER_TEMP/terraform.zip" \
-            -d "$RUNNER_TEMP/terraform-bin"
-
-          echo "$RUNNER_TEMP/terraform-bin" >> "$GITHUB_PATH"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Azure Login
         uses: azure/login@v2
         with:
-          auth-type: SERVICE_PRINCIPAL
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: >-
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
 
-      - name: Terraform Init for Validation
+      - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
         run: |
-          set -euo pipefail
-
           terraform init \
             -input=false \
             -backend-config="resource_group_name=23-10-2026ramji" \
@@ -152,24 +114,12 @@ jobs:
             -backend-config="use_cli=true" \
             -backend-config="use_azuread_auth=true"
 
-      - name: Terraform Format
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform fmt -check -recursive
-
       - name: Terraform Validate
         working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform validate
-
-          echo "Terraform Validate completed successfully."
-
-  # ==========================================================
-  # STAGE 3: TERRAFORM PLAN
-  # ==========================================================
+        run: terraform validate
 
   terraform-plan:
-    name: '3. Terraform Plan'
+    name: Terraform Plan
     runs-on: [self-hosted, linux, x64]
     needs: terraform-validate
 
@@ -177,40 +127,25 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Terraform
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$RUNNER_TEMP/terraform-bin"
-
-          if ! command -v unzip >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y unzip
-          fi
-
-          curl -fsSL \
-            "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" \
-            -o "$RUNNER_TEMP/terraform.zip"
-
-          unzip -o "$RUNNER_TEMP/terraform.zip" \
-            -d "$RUNNER_TEMP/terraform-bin"
-
-          echo "$RUNNER_TEMP/terraform-bin" >> "$GITHUB_PATH"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Azure Login
         uses: azure/login@v2
         with:
-          auth-type: SERVICE_PRINCIPAL
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: >-
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
 
-      - name: Terraform Init for Plan
+      - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
         run: |
-          set -euo pipefail
-
           terraform init \
             -input=false \
             -backend-config="resource_group_name=23-10-2026ramji" \
@@ -225,27 +160,13 @@ jobs:
       - name: Terraform Plan
         working-directory: ${{ env.TF_DIR }}
         run: |
-          set -euo pipefail
-
           terraform plan \
             -input=false \
             -out=tfplan
 
-          echo "Terraform Plan completed successfully."
-
-      - name: Upload Terraform Plan Artifact
+      - name: Upload Terraform Plan
         uses: actions/upload-artifact@v4
         with:
           name: terraform-preprod-plan
-          path: environments/preprod/tfplan
+          path: ${{ env.TF_DIR }}/tfplan
           retention-days: 5
-          if-no-files-found: error
-
-      - name: Pipeline Success
-        run: |
-          echo "======================================"
-          echo "Terraform Preprod Pipeline Completed"
-          echo "Runner: ramji"
-          echo "Environment: preprod"
-          echo "Stages: Init, Validate, Plan"
-          echo "======================================"
