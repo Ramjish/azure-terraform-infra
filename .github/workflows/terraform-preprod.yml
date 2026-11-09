@@ -1,0 +1,167 @@
+name: Terraform Preprod Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+# ============================================================
+# RUNNER CONFIGURATION
+# ============================================================
+
+jobs:
+
+  # ==========================================================
+  # STAGE 1: TERRAFORM INIT
+  # ==========================================================
+
+  terraform-init:
+    name: Terraform Init
+    runs-on: [self-hosted, linux, x64]
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      TF_DIR: environments/preprod
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Terraform
+        run: |
+          TERRAFORM_VERSION="1.10.5"
+
+          if ! command -v terraform >/dev/null 2>&1 || \
+             [ "$(terraform version -json | python3 -c 'import json,sys; print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null)" != "$TERRAFORM_VERSION" ]; then
+
+            mkdir -p "$HOME/.local/bin"
+
+            curl -fsSL \
+              "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+              -o /tmp/terraform.zip
+
+            sudo apt-get update
+            sudo apt-get install -y unzip
+
+            unzip -o /tmp/terraform.zip -d /tmp/terraform-bin
+            sudo install /tmp/terraform-bin/terraform /usr/local/bin/terraform
+          fi
+
+          terraform version
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="resource_group_name=23-10-2026ramji" \
+            -backend-config="storage_account_name=ramjist" \
+            -backend-config="container_name=ramjist1" \
+            -backend-config="key=tfstate23"
+
+  # ==========================================================
+  # STAGE 2: TERRAFORM VALIDATE
+  # ==========================================================
+
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: [self-hosted, linux, x64]
+    needs: terraform-init
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      TF_DIR: environments/preprod
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Terraform Init for Validation
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="resource_group_name=23-10-2026ramji" \
+            -backend-config="storage_account_name=ramjist" \
+            -backend-config="container_name=ramjist1" \
+            -backend-config="key=tfstate23"
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+  # ==========================================================
+  # STAGE 3: TERRAFORM PLAN
+  # ==========================================================
+
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: [self-hosted, linux, x64]
+    needs: terraform-validate
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      TF_DIR: environments/preprod
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Terraform Init for Plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="resource_group_name=23-10-2026ramji" \
+            -backend-config="storage_account_name=ramjist" \
+            -backend-config="container_name=ramjist1" \
+            -backend-config="key=tfstate23"
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-preprod-plan
+          path: environments/preprod/tfplan
+          retention-days: 5
