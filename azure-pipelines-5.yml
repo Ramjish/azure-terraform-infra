@@ -1,0 +1,284 @@
+# ==========================================================
+# TRIGGER
+# ==========================================================
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none
+
+# ==========================================================
+# AGENT POOL
+# ==========================================================
+pool:
+  name: ado-infra-pool-11-10-2026
+
+# ==========================================================
+# PARAMETERS
+# ==========================================================
+parameters:
+  - name: environment
+    displayName: 'Select Environment'
+    type: string
+    default: preprod
+    values:
+      - dev
+      - preprod
+      - prod
+
+  - name: runTfsec
+    displayName: 'Run tfsec Security Scan?'
+    type: boolean
+    default: true
+
+  - name: runTflint
+    displayName: 'Run TFLint Scan?'
+    type: boolean
+    default: true
+
+  - name: runCheckov
+    displayName: 'Run Checkov Security Scan?'
+    type: boolean
+    default: true
+
+  - name: runValidate
+    displayName: 'Run Terraform Format and Validate?'
+    type: boolean
+    default: true
+
+  - name: runPlan
+    displayName: 'Run Terraform Plan?'
+    type: boolean
+    default: true
+
+  - name: runApply
+    displayName: 'Run Terraform Apply?'
+    type: boolean
+    default: false
+
+# ==========================================================
+# VARIABLES
+# ==========================================================
+variables:
+  TF_VERSION: '1.10.5'
+  WORKING_DIRECTORY: '$(Build.SourcesDirectory)/environments/${{ parameters.environment }}'
+
+# ==========================================================
+# STAGES
+# ==========================================================
+stages:
+
+# ==========================================================
+# STAGE 1: TFSEC
+# ==========================================================
+- stage: TfsecScan
+  displayName: '1. tfsec Security Scan'
+  dependsOn: []
+  condition: and(succeeded(), ${{ eq(parameters.runTfsec, true) }})
+
+  jobs:
+  - job: Tfsec
+    steps:
+    - checkout: self
+
+    - bash: |
+        set -euo pipefail
+
+        if ! command -v tfsec >/dev/null 2>&1; then
+          echo "Installing tfsec..."
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+        fi
+
+        tfsec --version
+        tfsec "$(WORKING_DIRECTORY)"
+      displayName: 'Run tfsec'
+      env:
+        WORKING_DIRECTORY: $(WORKING_DIRECTORY)
+
+# ==========================================================
+# STAGE 2: TFLINT
+# ==========================================================
+- stage: TFLintScan
+  displayName: '2. TFLint Scan'
+  dependsOn: []
+  condition: and(succeeded(), ${{ eq(parameters.runTflint, true) }})
+
+  jobs:
+  - job: TFLint
+    steps:
+    - checkout: self
+
+    - bash: |
+        set -euo pipefail
+
+        if ! command -v tflint >/dev/null 2>&1; then
+          echo "ERROR: TFLint is not installed on the agent."
+          exit 1
+        fi
+
+        cd "$(WORKING_DIRECTORY)"
+
+        tflint --version
+        tflint --init
+        tflint
+      displayName: 'Run TFLint'
+      env:
+        WORKING_DIRECTORY: $(WORKING_DIRECTORY)
+
+# ==========================================================
+# STAGE 3: CHECKOV
+# ==========================================================
+- stage: CheckovScan
+  displayName: '3. Checkov Security Scan'
+  dependsOn: []
+  condition: and(succeeded(), ${{ eq(parameters.runCheckov, true) }})
+
+  jobs:
+  - job: Checkov
+    steps:
+    - checkout: self
+
+    - bash: |
+        set -euo pipefail
+
+        python3 -m venv "$(Agent.TempDirectory)/checkov-venv"
+        "$(Agent.TempDirectory)/checkov-venv/bin/pip" install --upgrade pip
+        "$(Agent.TempDirectory)/checkov-venv/bin/pip" install checkov
+
+        "$(Agent.TempDirectory)/checkov-venv/bin/checkov" \
+          -d "$(WORKING_DIRECTORY)" \
+          --framework terraform
+      displayName: 'Run Checkov'
+      env:
+        WORKING_DIRECTORY: $(WORKING_DIRECTORY)
+
+# ==========================================================
+# STAGE 4: TERRAFORM FORMAT AND VALIDATE
+# ==========================================================
+- stage: TerraformValidate
+  displayName: '4. Terraform Format and Validate'
+  dependsOn: []
+  condition: and(succeeded(), ${{ eq(parameters.runValidate, true) }})
+
+  jobs:
+  - job: Validate
+    steps:
+    - checkout: self
+
+    - bash: |
+        set -euo pipefail
+        terraform version
+        terraform fmt -check -recursive
+      displayName: 'Terraform Format Check'
+      workingDirectory: '$(Build.SourcesDirectory)'
+
+    - bash: |
+        set -euo pipefail
+        terraform init -backend=false -input=false
+        terraform validate
+      displayName: 'Terraform Validate'
+      workingDirectory: '$(WORKING_DIRECTORY)'
+
+# ==========================================================
+# STAGE 5: TERRAFORM PLAN
+# ==========================================================
+- stage: TerraformPlan
+  displayName: '5. Terraform Plan'
+
+  dependsOn:
+  - TfsecScan
+  - TFLintScan
+  - CheckovScan
+  - TerraformValidate
+
+  # Skipped optional scans are allowed.
+  # Failed scans or validation prevent the plan.
+  condition: |
+    and(
+      not(canceled()),
+      eq('${{ parameters.runPlan }}', 'true'),
+      in(dependencies.TfsecScan.result, 'Succeeded', 'Skipped'),
+      in(dependencies.TFLintScan.result, 'Succeeded', 'Skipped'),
+      in(dependencies.CheckovScan.result, 'Succeeded', 'Skipped'),
+      in(dependencies.TerraformValidate.result, 'Succeeded', 'Skipped')
+    )
+
+  jobs:
+  - job: Plan
+    steps:
+    - checkout: self
+
+    - bash: |
+        set -euo pipefail
+
+        terraform version
+
+        terraform init -input=false \
+          -backend-config="resource_group_name=27-rg" \
+          -backend-config="storage_account_name=stoargeaccoun1" \
+          -backend-config="container_name=container12" \
+          -backend-config="key=tfstate12" \
+          -backend-config="use_azuread_auth=true"
+
+        terraform plan \
+          -input=false \
+          -out="$(Build.ArtifactStagingDirectory)/tfplan"
+      displayName: 'Terraform Init and Plan'
+      workingDirectory: '$(WORKING_DIRECTORY)'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Terraform Plan'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/tfplan'
+        artifact: 'terraform-plan'
+        publishLocation: 'pipeline'
+
+# ==========================================================
+# STAGE 6: TERRAFORM APPLY
+# ==========================================================
+- stage: TerraformApply
+  displayName: '6. Terraform Apply'
+  dependsOn:
+  - TerraformPlan
+
+  condition: |
+    and(
+      succeeded(),
+      eq('${{ parameters.runApply }}', 'true'),
+      eq('${{ parameters.runPlan }}', 'true')
+    )
+
+  jobs:
+  - deployment: Apply
+    displayName: 'Apply Terraform Changes'
+    environment: '${{ parameters.environment }}'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Terraform Plan'
+            inputs:
+              buildType: 'current'
+              artifactName: 'terraform-plan'
+              targetPath: '$(Pipeline.Workspace)/terraform-plan'
+
+          - bash: |
+              set -euo pipefail
+
+              terraform init -input=false \
+                -backend-config="resource_group_name=27-rg" \
+                -backend-config="storage_account_name=stoargeaccoun1" \
+                -backend-config="container_name=container12" \
+                -backend-config="key=tfstate12" \
+                -backend-config="use_azuread_auth=true"
+
+              terraform apply \
+                -input=false \
+                "$(Pipeline.Workspace)/terraform-plan/tfplan"
+            displayName: 'Apply Reviewed Terraform Plan'
+            workingDirectory: '$(WORKING_DIRECTORY)'

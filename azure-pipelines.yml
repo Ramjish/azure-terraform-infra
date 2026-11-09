@@ -1,0 +1,297 @@
+trigger:
+  branches:
+    include:
+      - main
+      - features/ramji
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  name: ado-infra-pool-11-10-2026
+
+variables:
+  terraformVersion: '1.10.5'
+  terraformWorkingDirectory: '$(Build.SourcesDirectory)/environments/preprod'
+
+  azureServiceConnection: 'ramji-service-connection'
+  azureSubscriptionId: '24613c55-f186-46f4-859d-6eed8878ac10'
+
+  backendResourceGroup: 'rg-ramji-ado'
+  backendStorageAccount: 'storageaccountramjiado'
+  backendContainer: 'ramjicontainer'
+  backendKey: 'preprod.terraform.tfstate1'
+
+  planArtifactName: 'terraform-plan'
+
+stages:
+
+# ==================================================
+# STAGE 1: SECURITY SCAN
+# ==================================================
+- stage: SecurityScan
+  displayName: 'Terraform Security Scan'
+
+  jobs:
+  - job: Tfsec
+    displayName: 'Run tfsec'
+    steps:
+    - checkout: self
+
+    - task: Bash@3
+      displayName: 'Install and Run tfsec'
+      inputs:
+        targetType: inline
+        script: |
+          set -euo pipefail
+
+          TFSEC_VERSION="v1.28.14"
+          TFSEC_BIN="$(Agent.TempDirectory)/tfsec"
+          TF_DIR="$(Build.SourcesDirectory)/environments/preprod"
+
+          echo "Downloading tfsec..."
+
+          curl --fail --show-error --location --retry 3 \
+            "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" \
+            --output "$TFSEC_BIN"
+
+          chmod +x "$TFSEC_BIN"
+
+          "$TFSEC_BIN" --version
+
+          if [ ! -d "$TF_DIR" ]; then
+            echo "ERROR: Terraform directory not found: $TF_DIR"
+            exit 1
+          fi
+
+          echo "Running Terraform security scan..."
+          "$TFSEC_BIN" "$TF_DIR" --soft-fail
+
+          echo "Security scan completed."
+
+# ==================================================
+# STAGE 2: TERRAFORM INIT AND VALIDATE
+# ==================================================
+- stage: TerraformInit
+  displayName: 'Terraform Init and Validate'
+  dependsOn: SecurityScan
+
+  jobs:
+  - job: Init
+    displayName: 'Initialize Terraform'
+    steps:
+    - checkout: self
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Init and Validate'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -euo pipefail
+
+          TF_DIR="$(Build.SourcesDirectory)/environments/preprod"
+          TF_BIN="$(Agent.TempDirectory)/terraform-bin"
+
+          mkdir -p "$TF_BIN"
+          cd "$TF_DIR"
+
+          echo "Installing Terraform $(terraformVersion)..."
+
+          curl --fail --show-error --location --retry 3 \
+            "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" \
+            --output "$(Agent.TempDirectory)/terraform.zip"
+
+          unzip -o "$(Agent.TempDirectory)/terraform.zip" -d "$TF_BIN"
+          export PATH="$TF_BIN:$PATH"
+
+          terraform version
+
+          # Azure DevOps Workload Identity Federation
+          export ARM_CLIENT_ID="$servicePrincipalId"
+          export ARM_TENANT_ID="$tenantId"
+          export ARM_SUBSCRIPTION_ID="$(azureSubscriptionId)"
+          export ARM_USE_OIDC=true
+          export ARM_OIDC_TOKEN="$idToken"
+          export ARM_USE_CLI=false
+          export TF_IN_AUTOMATION=true
+
+          if [ -z "${ARM_OIDC_TOKEN:-}" ]; then
+            echo "ERROR: Azure OIDC token is empty."
+            exit 1
+          fi
+
+          terraform init \
+            -input=false \
+            -reconfigure \
+            -backend-config="resource_group_name=$(backendResourceGroup)" \
+            -backend-config="storage_account_name=$(backendStorageAccount)" \
+            -backend-config="container_name=$(backendContainer)" \
+            -backend-config="key=$(backendKey)" \
+            -backend-config="subscription_id=$(azureSubscriptionId)" \
+            -backend-config="tenant_id=$tenantId" \
+            -backend-config="client_id=$servicePrincipalId" \
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
+
+          terraform validate
+
+# ==================================================
+# STAGE 3: TERRAFORM PLAN
+# ==================================================
+- stage: TerraformPlan
+  displayName: 'Terraform Plan'
+  dependsOn: TerraformInit
+
+  jobs:
+  - job: Plan
+    displayName: 'Generate Terraform Plan'
+    steps:
+    - checkout: self
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Init and Plan'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -euo pipefail
+
+          TF_DIR="$(Build.SourcesDirectory)/environments/preprod"
+          TF_BIN="$(Agent.TempDirectory)/terraform-bin"
+
+          mkdir -p "$TF_BIN"
+          cd "$TF_DIR"
+
+          curl --fail --show-error --location --retry 3 \
+            "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" \
+            --output "$(Agent.TempDirectory)/terraform.zip"
+
+          unzip -o "$(Agent.TempDirectory)/terraform.zip" -d "$TF_BIN"
+          export PATH="$TF_BIN:$PATH"
+
+          export ARM_CLIENT_ID="$servicePrincipalId"
+          export ARM_TENANT_ID="$tenantId"
+          export ARM_SUBSCRIPTION_ID="$(azureSubscriptionId)"
+          export ARM_USE_OIDC=true
+          export ARM_OIDC_TOKEN="$idToken"
+          export ARM_USE_CLI=false
+          export TF_IN_AUTOMATION=true
+
+          terraform init \
+            -input=false \
+            -reconfigure \
+            -backend-config="resource_group_name=$(backendResourceGroup)" \
+            -backend-config="storage_account_name=$(backendStorageAccount)" \
+            -backend-config="container_name=$(backendContainer)" \
+            -backend-config="key=$(backendKey)" \
+            -backend-config="subscription_id=$(azureSubscriptionId)" \
+            -backend-config="tenant_id=$tenantId" \
+            -backend-config="client_id=$servicePrincipalId" \
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
+
+          terraform validate
+
+          terraform plan \
+            -input=false \
+            -out=tfplan
+
+          mkdir -p "$(Build.ArtifactStagingDirectory)/terraform-plan"
+          cp tfplan "$(Build.ArtifactStagingDirectory)/terraform-plan/tfplan"
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Terraform Plan Artifact'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/terraform-plan'
+        artifact: '$(planArtifactName)'
+        publishLocation: pipeline
+
+# ==================================================
+# STAGE 4: TERRAFORM APPLY
+# Apply only on main branch
+# ==================================================
+- stage: TerraformApply
+  displayName: 'Terraform Apply'
+  dependsOn: TerraformPlan
+
+  condition: |
+    and(
+      succeeded(),
+      eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+      ne(variables['Build.Reason'], 'PullRequest')
+    )
+
+  jobs:
+  - job: Apply
+    displayName: 'Apply Terraform Plan'
+    steps:
+    - checkout: self
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Terraform Plan'
+      inputs:
+        buildType: current
+        artifactName: '$(planArtifactName)'
+        targetPath: '$(Pipeline.Workspace)/terraform-plan'
+
+    - task: AzureCLI@2
+      displayName: 'Terraform Init and Apply'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -euo pipefail
+
+          TF_DIR="$(Build.SourcesDirectory)/environments/preprod"
+          TF_BIN="$(Agent.TempDirectory)/terraform-bin"
+          PLAN_FILE="$(Pipeline.Workspace)/terraform-plan/tfplan"
+
+          mkdir -p "$TF_BIN"
+          cd "$TF_DIR"
+
+          curl --fail --show-error --location --retry 3 \
+            "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" \
+            --output "$(Agent.TempDirectory)/terraform.zip"
+
+          unzip -o "$(Agent.TempDirectory)/terraform.zip" -d "$TF_BIN"
+          export PATH="$TF_BIN:$PATH"
+
+          export ARM_CLIENT_ID="$servicePrincipalId"
+          export ARM_TENANT_ID="$tenantId"
+          export ARM_SUBSCRIPTION_ID="$(azureSubscriptionId)"
+          export ARM_USE_OIDC=true
+          export ARM_OIDC_TOKEN="$idToken"
+          export ARM_USE_CLI=false
+          export TF_IN_AUTOMATION=true
+
+          terraform init \
+            -input=false \
+            -reconfigure \
+            -backend-config="resource_group_name=$(backendResourceGroup)" \
+            -backend-config="storage_account_name=$(backendStorageAccount)" \
+            -backend-config="container_name=$(backendContainer)" \
+            -backend-config="key=$(backendKey)" \
+            -backend-config="subscription_id=$(azureSubscriptionId)" \
+            -backend-config="tenant_id=$tenantId" \
+            -backend-config="client_id=$servicePrincipalId" \
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
+
+          if [ ! -f "$PLAN_FILE" ]; then
+            echo "ERROR: Terraform plan file not found: $PLAN_FILE"
+            exit 1
+          fi
+
+          terraform apply \
+            -input=false \
+            "$PLAN_FILE"
+

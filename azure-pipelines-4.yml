@@ -1,0 +1,108 @@
+trigger:
+  - main
+
+pool:
+  name: ado-infra-pool-11-10-2026
+
+variables:
+  workingDirectory: '$(System.DefaultWorkingDirectory)/environments/preprod'
+
+stages:
+
+# ==========================================================
+# STAGE 1: TERRAFORM INIT
+# ==========================================================
+- stage: Terraform_Init
+  displayName: 'Terraform Init'
+  jobs:
+  - job: TerraformInit
+    displayName: 'Initialize Terraform'
+    steps:
+    - checkout: self
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(workingDirectory)'
+
+        # Backend authentication
+        backendServiceArm: 'ramji-service-connection'
+        backendAzureRmOverrideSubscriptionID: '24613c55-f186-46f4-859d-6eed8878ac10'
+        backendAzureRmResourceGroupName: '23-10-2026ramji'
+        backendAzureRmStorageAccountName: 'ramjist'
+        backendAzureRmContainerName: 'ramjist1'
+        backendAzureRmKey: 'tfstate24'
+
+        # Azure service connection
+        environmentServiceNameAzureRM: 'ramji-service-connection'
+
+# ==========================================================
+# STAGE 2: TERRAFORM VALIDATE
+# ==========================================================
+- stage: Terraform_Validate
+  displayName: 'Terraform Validate'
+  dependsOn: Terraform_Init
+
+  jobs:
+  - job: TerraformValidate
+    displayName: 'Validate Terraform Configuration'
+    steps:
+    - checkout: self
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init for Validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(workingDirectory)'
+        backendServiceArm: 'ramji-service-connection'
+        backendAzureRmOverrideSubscriptionID: '24613c55-f186-46f4-859d-6eed8878ac10'
+        backendAzureRmResourceGroupName: '23-10-2026ramji'
+        backendAzureRmStorageAccountName: 'ramjist'
+        backendAzureRmContainerName: 'ramjist1'
+        backendAzureRmKey: 'tfstate24'
+        environmentServiceNameAzureRM: 'ramji-service-connection'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(workingDirectory)'
+
+# ==========================================================
+# STAGE 3: TERRAFORM PLAN
+# ==========================================================
+- stage: Terraform_Plan
+  displayName: 'Terraform Plan'
+  dependsOn: Terraform_Validate
+
+  jobs:
+  - job: TerraformPlan
+    displayName: 'Create Terraform Plan'
+    steps:
+    - checkout: self
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init for Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(workingDirectory)'
+        backendServiceArm: 'ramji-service-connection'
+        backendAzureRmOverrideSubscriptionID: '24613c55-f186-46f4-859d-6eed8878ac10'
+        backendAzureRmResourceGroupName: '23-10-2026ramji'
+        backendAzureRmStorageAccountName: 'ramjist'
+        backendAzureRmContainerName: 'ramjist1'
+        backendAzureRmKey: 'tfstate24'
+        environmentServiceNameAzureRM: 'ramji-service-connection'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(workingDirectory)'
+        environmentServiceNameAzureRM: 'ramji-service-connection'

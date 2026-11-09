@@ -1,0 +1,120 @@
+# ============================================================
+# Azure DevOps Terraform Pipeline - Preprod
+# Stages: Init -> Validate -> Plan
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  name: Default
+
+variables:
+  terraformWorkingDirectory: '$(System.DefaultWorkingDirectory)/environments/preprod'
+
+stages:
+
+# ============================================================
+# STAGE 1: TERRAFORM INIT
+# ============================================================
+- stage: TerraformInit
+  displayName: 'Terraform Init'
+
+  jobs:
+  - job: Init
+    displayName: 'Initialize Terraform'
+
+    steps:
+    - checkout: self
+      clean: true
+      fetchDepth: 1
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(terraformWorkingDirectory)'
+        backendServiceArm: '23-10-ram'
+        backendAzureRmResourceGroupName: '23-10-2026ramji'
+        backendAzureRmStorageAccountName: 'ramjist'
+        backendAzureRmContainerName: 'ramjist1'
+        backendAzureRmKey: 'tfstate23'
+
+# ============================================================
+# STAGE 2: TERRAFORM VALIDATE
+# ============================================================
+- stage: TerraformValidate
+  displayName: 'Terraform Validate'
+  dependsOn: TerraformInit
+
+  jobs:
+  - job: Validate
+    displayName: 'Validate Terraform Configuration'
+
+    steps:
+    - checkout: self
+      clean: true
+      fetchDepth: 1
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init for Validation'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(terraformWorkingDirectory)'
+        backendServiceArm: '23-10-ram'
+        backendAzureRmResourceGroupName: '23-10-2026ramji'
+        backendAzureRmStorageAccountName: 'ramjist'
+        backendAzureRmContainerName: 'ramjist1'
+        backendAzureRmKey: 'tfstate23'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(terraformWorkingDirectory)'
+
+# ============================================================
+# STAGE 3: TERRAFORM PLAN
+# ============================================================
+- stage: TerraformPlan
+  displayName: 'Terraform Plan'
+  dependsOn: TerraformValidate
+
+  jobs:
+  - job: Plan
+    displayName: 'Generate Terraform Plan'
+
+    steps:
+    - checkout: self
+      clean: true
+      fetchDepth: 1
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init for Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(terraformWorkingDirectory)'
+        backendServiceArm: '23-10-ram'
+        backendAzureRmResourceGroupName: '23-10-2026ramji'
+        backendAzureRmStorageAccountName: 'ramjist'
+        backendAzureRmContainerName: 'ramjist1'
+        backendAzureRmKey: 'tfstate23'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(terraformWorkingDirectory)'
+        environmentServiceNameAzureRM: '23-10-ram'
