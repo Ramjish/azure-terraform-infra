@@ -1,5 +1,4 @@
-
-name: Terraform Preprod Pipeline
+name: Terraform Azure PreProd Pipeline
 
 on:
   push:
@@ -10,163 +9,128 @@ on:
     branches:
       - main
 
-  workflow_dispatch:
-
 permissions:
   contents: read
 
 env:
   TF_VERSION: "1.10.5"
   TF_DIR: "environments/preprod"
-  TF_IN_AUTOMATION: "true"
-
-  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  TF_IN_AUTOMATION: true
 
 jobs:
+  terraform:
+    name: Terraform Init Validate Plan
 
-  terraform-init:
-    name: Terraform Init
     runs-on: [self-hosted, linux, x64]
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
+
+      # 1. Checkout Repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Azure CLI
-        shell: bash
+      # 2. Verify Runner
+      - name: Verify Runner
         run: |
-          if ! command -v az >/dev/null 2>&1; then
-            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-          fi
+          echo "Runner Information"
+          hostname
+          whoami
+          pwd
+          echo "PATH=$PATH"
+
+      # 3. Verify Node.js and Azure CLI
+      - name: Verify Prerequisites
+        run: |
+          node --version
+          npm --version
           az version
+          git --version
 
+      # 4. Azure Login - Service Principal
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 5. Verify Azure Login
+      - name: Verify Azure Account
+        run: |
+          az account show
+          az account set \
+            --subscription "${ARM_SUBSCRIPTION_ID}"
+
+      # 6. Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: >-
-            {
-              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
-              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
-              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
-              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
-            }
+      # 7. Verify Terraform
+      - name: Terraform Version
+        run: |
+          terraform version
 
-      - name: Verify Azure Login
-        run: az account show --output table
+      # 8. Terraform Format
+      - name: Terraform Format
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform fmt -check -recursive
 
+      # 9. Terraform Init
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
-        shell: bash
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         run: |
-          terraform init \
-            -input=false \
+          terraform init -input=false \
             -backend-config="resource_group_name=23-10-2026ramji" \
             -backend-config="storage_account_name=ramjist" \
             -backend-config="container_name=ramjist1" \
             -backend-config="key=tfstate23" \
             -backend-config="subscription_id=${ARM_SUBSCRIPTION_ID}" \
             -backend-config="tenant_id=${ARM_TENANT_ID}" \
-            -backend-config="use_cli=true" \
             -backend-config="use_azuread_auth=true"
 
-  terraform-validate:
-    name: Terraform Validate
-    runs-on: [self-hosted, linux, x64]
-    needs: terraform-init
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: >-
-            {
-              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
-              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
-              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
-              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
-            }
-
-      - name: Terraform Init
-        working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform init \
-            -input=false \
-            -backend-config="resource_group_name=23-10-2026ramji" \
-            -backend-config="storage_account_name=ramjist" \
-            -backend-config="container_name=ramjist1" \
-            -backend-config="key=tfstate23" \
-            -backend-config="subscription_id=${ARM_SUBSCRIPTION_ID}" \
-            -backend-config="tenant_id=${ARM_TENANT_ID}" \
-            -backend-config="use_cli=true" \
-            -backend-config="use_azuread_auth=true"
-
+      # 10. Terraform Validate
       - name: Terraform Validate
         working-directory: ${{ env.TF_DIR }}
-        run: terraform validate
-
-  terraform-plan:
-    name: Terraform Plan
-    runs-on: [self-hosted, linux, x64]
-    needs: terraform-validate
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: >-
-            {
-              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
-              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
-              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
-              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
-            }
-
-      - name: Terraform Init
-        working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform init \
-            -input=false \
-            -backend-config="resource_group_name=23-10-2026ramji" \
-            -backend-config="storage_account_name=ramjist" \
-            -backend-config="container_name=ramjist1" \
-            -backend-config="key=tfstate23" \
-            -backend-config="subscription_id=${ARM_SUBSCRIPTION_ID}" \
-            -backend-config="tenant_id=${ARM_TENANT_ID}" \
-            -backend-config="use_cli=true" \
-            -backend-config="use_azuread_auth=true"
+          terraform validate
 
+      # 11. Terraform Plan
       - name: Terraform Plan
         working-directory: ${{ env.TF_DIR }}
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         run: |
           terraform plan \
             -input=false \
             -out=tfplan
 
+      # 12. Upload Terraform Plan
       - name: Upload Terraform Plan
         uses: actions/upload-artifact@v4
         with:
           name: terraform-preprod-plan
           path: ${{ env.TF_DIR }}/tfplan
+          if-no-files-found: error
           retention-days: 5
+
+      # 13. Pipeline Summary
+      - name: Pipeline Summary
+        if: success()
+        run: |
+          echo "Terraform Pipeline Completed Successfully"
+          echo "Environment: PreProd"
+          echo "Terraform Version: $TF_VERSION"
+          echo "Stages: Init, Validate, Plan"
